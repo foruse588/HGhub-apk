@@ -1,74 +1,60 @@
 name: Build Android APK
 
 on:
-  workflow_dispatch: # 允许你在GitHub页面上手动点击触发构建
+  workflow_dispatch:
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      # 1. 配置前端环境 (Node.js & pnpm)
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10 # 项目要求 pnpm 10
+          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22' # 项目要求 Node.js 22
-          cache: 'pnpm'
+          node-version: 22
+          cache: pnpm
 
-      # 2. 配置 Rust 环境
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.90 # 项目要求 Rust 1.90 或更高
-
-      - name: Install Rust targets for Android
-        run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-
-      # 3. 配置 Android 构建环境 (SDK & NDK)
-      - name: Set up JDK
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17' # Tauri Android 构建通常需要 JDK 17
+          distribution: temurin
+          java-version: "17"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c # 指定一个稳定的 NDK 版本
-          add-to-path: true
-
-      - name: Configure Environment Variables
+      - name: Install Android SDK and NDK
+        shell: bash
         run: |
-          echo "NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
-      # 4. 安装项目依赖并构建 APK
+      - name: Setup Rust Android target
+        run: rustup target add aarch64-linux-android
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Initialize Tauri Android Project
-        run: pnpm tauri android init
+      - name: Initialize Android project
+        run: pnpm android:init
 
-      - name: Build Android APK
-        run: pnpm tauri android build --apk
+      - name: Build ARM64 APK
+        run: pnpm exec tauri android build --apk --target aarch64
 
-      # 5. 上传构建产物 (APK)
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: HGhub-android-apk
+          name: HGhub-Android-APK
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-          # 如果找不到，可以尝试更通用的路径:
-          # path: "**/*.apk"
+          if-no-files-found: error
