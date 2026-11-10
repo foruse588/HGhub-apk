@@ -48,15 +48,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17' # Tauri Android 构建通常需要 JDK 17
 
-      # ★ 修复点 1：升级到 v4，避开已下架的 tools 包导致的失败
-      # ★ 修复点 2：显式指定 packages 为 platform-tools，不再请求遗留的 tools
+      # 升级到 v4，避开已下架的 tools 包导致的失败；显式只装 platform-tools
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
           packages: 'platform-tools'
 
-      # ★ 关键步骤：在安装 NDK 之前显式接受所有 SDK 许可证
+      # 在安装 NDK 之前显式接受所有 SDK 许可证
       - name: Accept all Android SDK licenses
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
@@ -82,8 +81,16 @@ jobs:
       - name: Initialize Tauri Android Project
         run: pnpm tauri android init
 
+      # ★ 修改点：使用项目官方预设脚本，确保触发 Android 打包流程，产出 .apk
       - name: Build Android APK
-        run: pnpm tauri android build --apk
+        run: pnpm android:build
+
+      # 诊断步骤：构建完成后列出产物目录，便于确认实际生成的文件类型与路径
+      - name: List build outputs
+        if: always()
+        run: |
+          echo "===== Searching for APK/AAB/IPA artifacts ====="
+          find . -type f \( -name "*.apk" -o -name "*.aab" -o -name "*.ipa" \) 2>/dev/null || echo "No matching artifacts found."
 
       # ============================================
       # 5. 上传构建产物 (APK)
