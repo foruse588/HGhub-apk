@@ -48,10 +48,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17' # Tauri Android 构建通常需要 JDK 17
 
+      # ★ 修复点 1：升级到 v4，避开已下架的 tools 包导致的失败
+      # ★ 修复点 2：显式指定 packages 为 platform-tools，不再请求遗留的 tools
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          accept-android-sdk-licenses: true # 显式开启，默认为 true
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools'
 
       # ★ 关键步骤：在安装 NDK 之前显式接受所有 SDK 许可证
       - name: Accept all Android SDK licenses
