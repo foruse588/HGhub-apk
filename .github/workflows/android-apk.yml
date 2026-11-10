@@ -1,9 +1,9 @@
-name: Build Android APK
+name: Build Signed Android APK
 
 on:
-  workflow_dispatch: # 允许在 GitHub 页面手动触发构建
+  workflow_dispatch:
   push:
-    branches: [ main ] # 推送到 main 分支时自动触发
+    branches: [ main ]
 
 jobs:
   build-android:
@@ -14,57 +14,51 @@ jobs:
         uses: actions/checkout@v4
 
       # ============================================
-      # 1. 配置前端环境 (Node.js & pnpm)
+      # 1. 前端与 Rust 环境
       # ============================================
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10 # 项目要求 pnpm 10
+          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22' # 项目要求 Node.js 22
+          node-version: '22'
           cache: 'pnpm'
 
-      # ============================================
-      # 2. 配置 Rust 环境
-      # ============================================
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.90 # 项目要求 Rust 1.90 或更高
+          toolchain: 1.90
 
       - name: Install Rust targets for Android
         run: |
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
       # ============================================
-      # 3. 配置 Android 构建环境 (SDK & NDK)
+      # 2. Android SDK / NDK 环境
       # ============================================
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17' # Tauri Android 构建通常需要 JDK 17
+          java-version: '17'
 
-      # 升级到 v4，避开已下架的 tools 包导致的失败；显式只装 platform-tools
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
           packages: 'platform-tools'
 
-      # 在安装 NDK 之前显式接受所有 SDK 许可证
       - name: Accept all Android SDK licenses
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          echo "Android SDK licenses accepted."
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27c # 指定一个稳定的 NDK 版本
+          ndk-version: r27c
           add-to-path: true
 
       - name: Configure Environment Variables
@@ -73,7 +67,7 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
 
       # ============================================
-      # 4. 安装项目依赖并构建 APK
+      # 3. 安装依赖并初始化 Tauri Android 工程
       # ============================================
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -81,23 +75,85 @@ jobs:
       - name: Initialize Tauri Android Project
         run: pnpm tauri android init
 
-      # ★ 修改点：使用项目官方预设脚本，确保触发 Android 打包流程，产出 .apk
+      # ============================================
+      # 4. 动态完成全部签名配置（全部在 CI 运行时完成）
+      # ============================================
+      - name: Setup Android signing configuration
+        env:
+          KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          KEYSTORE_DIR="src-tauri/gen/android"
+          KEYSTORE_PATH="$(pwd)/${KEYSTORE_DIR}/release.keystore"
+          PROPERTIES_FILE="${KEYSTORE_DIR}/keystore.properties"
+          BUILD_FILE="${KEYSTORE_DIR}/app/build.gradle.kts"
+          SIGNING_FILE="${KEYSTORE_DIR}/android-signing.gradle.kts"
+
+          # 1) 解码 Base64 Keystore 到 Android 工程目录
+          printf '%s' "$KEY_BASE64" | base64 -d > "$KEYSTORE_PATH"
+
+          # 2) 生成 keystore.properties
+          cat > "$PROPERTIES_FILE" <<EOF
+          storeFile=${KEYSTORE_PATH}
+          storePassword=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+
+          # 3) 创建独立的签名 Gradle 脚本
+          cat > "$SIGNING_FILE" <<'GRADLE_EOF'
+          import java.io.FileInputStream
+          import java.util.Properties
+
+          val keystorePropertiesFile = rootProject.file("keystore.properties")
+          val keystoreProperties = Properties()
+          if (keystorePropertiesFile.exists()) {
+              keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+          }
+
+          android {
+              signingConfigs {
+                  create("release") {
+                      storeFile = file(keystoreProperties["storeFile"] as String)
+                      storePassword = keystoreProperties["storePassword"] as String
+                      keyAlias = keystoreProperties["keyAlias"] as String
+                      keyPassword = keystoreProperties["keyPassword"] as String
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("release")
+                  }
+              }
+          }
+          GRADLE_EOF
+
+          # 4) 在生成的 build.gradle.kts 末尾 apply 签名脚本
+          echo "" >> "$BUILD_FILE"
+          echo "apply(from = \"android-signing.gradle.kts\")" >> "$BUILD_FILE"
+
+          echo "===== Signing configuration ready ====="
+          ls -la "$KEYSTORE_DIR"
+          cat "$PROPERTIES_FILE"
+
+      # ============================================
+      # 5. 构建并上传已签名 APK
+      # ============================================
       - name: Build Android APK
         run: pnpm android:build
 
-      # 诊断步骤：构建完成后列出产物目录，便于确认实际生成的文件类型与路径
       - name: List build outputs
         if: always()
         run: |
-          echo "===== Searching for APK/AAB/IPA artifacts ====="
-          find . -type f \( -name "*.apk" -o -name "*.aab" -o -name "*.ipa" \) 2>/dev/null || echo "No matching artifacts found."
+          find . -type f \( -name "*.apk" -o -name "*.aab" -o -name "*.ipa" \) 2>/dev/null || true
 
-      # ============================================
-      # 5. 上传构建产物 (APK)
-      # ============================================
-      - name: Upload APK Artifact
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: HGhub-android-apk
+          name: signed-android-apk
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: error # 若找不到 APK 则显式报错，便于排查
+          if-no-files-found: error
